@@ -59,6 +59,7 @@ contract Stranger is ERC721, ERC721Enumerable, ERC721URIStorage, Pausable, Ownab
     function openMisteryBox(uint256 tokenId) public whenNotPaused {
         require(_exists(tokenId), "Intent to open non existing token");
         require(ownerOf(tokenId) == tx.origin, "Not enough ownership to open this token");
+        require(_isTokenOpen[tokenId] == false, "This token is already open");
         
         _setTokenURI(tokenId, _closedTokenDataURI[tokenId]);
         delete _closedTokenDataURI[tokenId];
