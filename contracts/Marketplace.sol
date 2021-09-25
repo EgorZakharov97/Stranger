@@ -44,7 +44,7 @@ contract Marketplace is ReentrancyGuard, Pausable, Ownable {
     }
 
     modifier exists(uint256 listingId) {
-        require(_listings[listingId].seller != address(0), "Marketplace: Intent to modify listing which does not own");
+        require(_listings[listingId].seller != address(0), "Marketplace: Intent to interact with non existing listing");
         _;
     }
 
@@ -54,12 +54,12 @@ contract Marketplace is ReentrancyGuard, Pausable, Ownable {
     }
 
     modifier notCancelled(uint256 listingId) {
-        require(_listings[listingId].cancelled == false, "Marketplace: Intent to modify listing which does not own");
+        require(_listings[listingId].cancelled == false, "Marketplace: Intent to perform sale on listing which is cancelled");
         _;
     }
 
     modifier isActive(uint256 listingId) {
-        require(_listings[listingId].active == true, "Marketplace: Intent to modify listing which does not own");
+        require(_listings[listingId].active == true, "Marketplace: Intent to perform sale on listing which is not active");
         _;
     }
 

@@ -78,6 +78,11 @@ contract("Marketplace", accounts => {
             // Perform sale
             expectThrow(marketplace.executeSale(0, {from: accounts[1], value: finalPrice}));
         });
+
+        it("Does not perform sale on own listing", async () => {
+            // Perform sale
+            expectThrow(marketplace.executeSale(0, {from: accounts[0], value: finalPrice}));
+        });
     
         it("Does not perform sale if listing is cancelled", async () => {
             // Cancell the listing
