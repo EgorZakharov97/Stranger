@@ -5,13 +5,14 @@ import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract Marketplace is ReentrancyGuard, Pausable {
+contract Marketplace is ReentrancyGuard, Pausable, Ownable {
     using Counters for Counters.Counter;
 
     Counters.Counter private _itemsSold;
 
-    address payable private _owner;
+    uint private _comissionPercentage;
 
     struct Listing {
         uint listingId;
@@ -21,14 +22,16 @@ contract Marketplace is ReentrancyGuard, Pausable {
         address payable owner;
         uint256 price;
         bool sold;
+        bool active;
+        bool cancelled;
     }
 
     mapping(address => Listing[]) private _userToListings;
     mapping(address => uint256) private _addressToCustomerCounter;
     Listing[] private _listings;
     
-    constructor() Pausable() {
-        _owner = payable(msg.sender);
+    constructor() Pausable() Ownable() {
+        _comissionPercentage = 1;
     }
     
     modifier isApproved(address nftContract, uint256 tokenId){
@@ -40,6 +43,26 @@ contract Marketplace is ReentrancyGuard, Pausable {
         _;
     }
 
+    modifier exists(uint256 listingId) {
+        require(_listings[listingId].seller != address(0), "Marketplace: Intent to modify listing which does not own");
+        _;
+    }
+
+    modifier owned(uint256 listingId) {
+        require(_listings[listingId].seller == msg.sender, "Marketplace: Intent to modify listing which does not own");
+        _;
+    }
+
+    modifier notCancelled(uint256 listingId) {
+        require(_listings[listingId].cancelled == false, "Marketplace: Intent to modify listing which does not own");
+        _;
+    }
+
+    modifier isActive(uint256 listingId) {
+        require(_listings[listingId].active == true, "Marketplace: Intent to modify listing which does not own");
+        _;
+    }
+
     event ItemListed(
         uint indexed listingId,
         address indexed nftContract,
@@ -47,7 +70,9 @@ contract Marketplace is ReentrancyGuard, Pausable {
         address seller,
         address owner,
         uint256 price,
-        bool sold
+        bool sold,
+        bool active,
+        bool cancelled
     );
 
     event ItemSold(
@@ -57,14 +82,38 @@ contract Marketplace is ReentrancyGuard, Pausable {
         address seller,
         address owner,
         uint256 price,
-        bool sold
+        bool sold,
+        bool active,
+        bool cancelled
     );
+
+    function _executeTransfer(
+        Listing storage listing
+    ) 
+        private whenNotPaused
+        isApproved(listing.nftContract, listing.tokenId)
+    {
+        require(listing.seller != address(0), "Marketplace: Intent to transact on unexisting listing");
+        require(listing.seller != msg.sender && listing.seller != tx.origin, "Marketplace: Intent to buy self owned own item");
+        
+        ERC721(listing.nftContract).safeTransferFrom(listing.seller, tx.origin, listing.tokenId);
+        
+        
+        
+        listing.owner = payable(tx.origin);
+        listing.sold = true;
+        
+        _itemsSold.increment();
+    }
 
     function createListing(
         address nftContract,
         uint256 tokenId,
         uint256 price
-    ) public nonReentrant whenNotPaused isApproved(nftContract, tokenId) {
+    )   
+        public nonReentrant whenNotPaused
+        isApproved(nftContract, tokenId)
+    {
         require(price >= 0, "Price cannot be negative");
 
         uint256 newListingId = _listings.length;
@@ -77,6 +126,8 @@ contract Marketplace is ReentrancyGuard, Pausable {
             payable(tx.origin),
             payable(address(0)),
             price,
+            false,
+            true,
             false
         ));
         
@@ -87,42 +138,60 @@ contract Marketplace is ReentrancyGuard, Pausable {
 
         // Authorize self to move this token
 
-        emit ItemListed(newListingId, nftContract, tokenId, tx.origin, address(0), price, false);
+        emit ItemListed(newListingId, nftContract, tokenId, tx.origin, address(0), price, false, true, false);
     }
 
-    function executeSale(uint256 listingId) public payable whenNotPaused nonReentrant {
+    function executeSale(uint256 listingId)
+        public payable whenNotPaused nonReentrant
+        exists(listingId)
+        notCancelled(listingId)
+        isActive(listingId)
+    {
         Listing storage listing = _listings[listingId];
+        uint finalPrice = ((listing.price * _comissionPercentage) / 100) + listing.price;
+
+        require(msg.value >= finalPrice, "Marketplace: Value must equal to the listing price plus comission");
         
         _executeTransfer(listing);
         
-        listing.owner.transfer(listing.price);
+        listing.seller.transfer(listing.price);
+        payable(owner()).transfer(finalPrice - msg.value);
         
-        emit ItemSold(listing.listingId, listing.nftContract, listing.tokenId, listing.seller, listing.owner, listing.price, true);
+        emit ItemSold(listing.listingId, listing.nftContract, listing.tokenId, listing.seller, listing.owner, listing.price, true, false, false);
+    }
+
+    function cancelListing(uint256 listingId) public owned(listingId) {
+        _listings[listingId].cancelled = true;
+        _listings[listingId].tokenId = 0;
+        _listings[listingId].nftContract = address(0);
+    }
+
+    function getComissionPercentage() public view returns(uint) {
+        return _comissionPercentage;
+    }
+
+    function setComissionPercentage(uint newPercentage) public onlyOwner {
+        _comissionPercentage = newPercentage;
+    }
+
+    function pauseListing(uint256 listingId) public owned(listingId) {
+        _listings[listingId].active = false;
+    }
+
+    function unpauseListing(uint256 listingId) public owned(listingId) {
+        _listings[listingId].active = true;
     }
     
-    function _executeTransfer(
-        Listing storage listing
-        ) private whenNotPaused nonReentrant isApproved(listing.nftContract, listing.tokenId) {
-            require(listing.seller != address(0), "Intent to transact on unexisting listing");
-            require(msg.value >= listing.price, "Value must equal to the listing price");
-            
-            ERC721(listing.nftContract).safeTransferFrom(listing.seller, tx.origin, listing.tokenId);
-            
-            
-            
-            listing.owner = payable(tx.origin);
-            listing.sold = true;
-            
-            _itemsSold.increment();
-        }
-    
-    function getUnsold() public view returns(Listing[] memory) {
+    function getUnsoldListings() public view returns(Listing[] memory) {
         uint256 unsoldItemsNumber = _listings.length - _itemsSold.current();
         Listing[] memory unsold = new Listing[](unsoldItemsNumber);
         uint256 unsoldLength = 0;
         
         for(uint256 i = 0; i < _listings.length; i++){
-            if(_listings[i].sold == false){
+            if(
+                _listings[i].sold == false &&
+                _listings[i].cancelled != false
+            ){
                 unsold[unsoldLength] = _listings[i];
                 unsoldLength++;
             }
@@ -131,7 +200,7 @@ contract Marketplace is ReentrancyGuard, Pausable {
         return unsold;
     }
     
-    function getSold() public view returns(Listing[] memory) {
+    function getExecutedListings() public view returns(Listing[] memory) {
         uint256 soldItemsNumber = _itemsSold.current();
         Listing[] memory sold = new Listing[](soldItemsNumber);
         uint256 soldLength = 0;
@@ -158,8 +227,12 @@ contract Marketplace is ReentrancyGuard, Pausable {
         return _userToListings[msg.sender];
     }
     
-    function getListingsByAddress(address user) public view whenNotPaused returns(Listing[] memory) {
+    function getUserListings(address user) public view whenNotPaused returns(Listing[] memory) {
         return _userToListings[user];
+    }
+
+    function getListing(uint256 listingId) public view whenNotPaused exists(listingId) returns(Listing memory) {
+        return _listings[listingId];
     }
 
 }
